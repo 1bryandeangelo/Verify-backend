@@ -1,3 +1,7 @@
+app.get("/", (req, res) => {
+  res.send("Verifly backend running");
+});
+
 import express from "express";
 import Stripe from "stripe";
 import Replicate from "replicate";
