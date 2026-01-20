@@ -1,7 +1,3 @@
-app.get("/", (req, res) => {
-  res.send("Verifly backend running");
-});
-
 import express from "express";
 import Stripe from "stripe";
 import Replicate from "replicate";
@@ -11,6 +7,10 @@ import { v4 as uuid } from "uuid";
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+app.get("/", (req, res) => {
+  res.send("Verifly backend running");
+});
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const replicate = new Replicate({
