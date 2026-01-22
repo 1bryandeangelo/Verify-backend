@@ -3,7 +3,6 @@ import Stripe from "stripe";
 import Replicate from "replicate";
 import cors from "cors";
 import { v4 as uuid } from "uuid";
-import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
 const app = express();
