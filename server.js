@@ -92,3 +92,54 @@ express.raw({type:"application/json"}),
 });
 
 app.listen(3000,()=>console.log("Running"));
+
+
+import fetch from "node-fetch";
+
+app.post("/scan", async (req, res) => {
+  try {
+    const { imageUrl, userId } = req.body;
+
+    // 1) Check free limit
+    const { data: scans } = await supabase
+      .from("scans")
+      .select("*")
+      .eq("user_id", userId);
+
+    if (scans.length >= 1) {
+      return res.status(403).json({ error: "PAYWALL" });
+    }
+
+    // 2) Send to Replicate
+    const response = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Token ${process.env.REPLICATE_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        version: "MODEL_VERSION_HERE",
+        input: { image: imageUrl }
+      })
+    });
+
+    const prediction = await response.json();
+
+    // Example result
+    const score = prediction.output.score;
+    const isAI = score > 0.5;
+
+    // 3) Save result
+    await supabase.from("scans").insert({
+      user_id: userId,
+      score,
+      is_ai: isAI
+    });
+
+    res.json({ score, isAI });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Scan failed" });
+  }
+});
