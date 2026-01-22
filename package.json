@@ -7,5 +7,6 @@
     "replicate": "^0.25.1",
     "cors": "^2.8.5",
     "uuid": "^9.0.0"
+    "@supabase/supabase-js": "^2.39.0",
   }
 }
