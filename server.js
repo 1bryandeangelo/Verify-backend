@@ -3,15 +3,16 @@ import cors from "cors";
 import multer from "multer";
 import { createClient } from "@supabase/supabase-js";
 import Replicate from "replicate";
+import Stripe from "stripe";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Multer for file uploads (stores in memory)
+// Multer for file uploads
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
 });
 
 /* ---------- SUPABASE ---------- */
@@ -20,7 +21,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-/* ---------- REPLICATE (for AI detection) ---------- */
+/* ---------- STRIPE ---------- */
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+/* ---------- REPLICATE ---------- */
 const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
@@ -28,6 +32,127 @@ const replicate = new Replicate({
 /* ---------- HEALTH CHECK ---------- */
 app.get("/", (req, res) => {
   res.send("Verifly backend running");
+});
+
+/* ---------- CREATE STRIPE CHECKOUT ---------- */
+app.post("/create-checkout", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: "Missing auth header" });
+    }
+
+    const token = authHeader.replace("Bearer ", "");
+    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+
+    if (userError || !user) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    const { priceId, mode } = req.body;
+
+    // Create or get Stripe customer
+    let stripeCustomerId;
+    const { data: existingCustomer } = await supabase
+      .from("users")
+      .select("stripe_customer_id")
+      .eq("id", user.id)
+      .single();
+
+    if (existingCustomer?.stripe_customer_id) {
+      stripeCustomerId = existingCustomer.stripe_customer_id;
+    } else {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        metadata: { supabase_user_id: user.id }
+      });
+      stripeCustomerId = customer.id;
+      
+      // Save customer ID
+      await supabase
+        .from("users")
+        .upsert({ id: user.id, stripe_customer_id: stripeCustomerId });
+    }
+
+    // Create checkout session
+    const session = await stripe.checkout.sessions.create({
+      customer: stripeCustomerId,
+      mode: mode, // 'payment' or 'subscription'
+      line_items: [{
+        price: priceId,
+        quantity: 1,
+      }],
+      success_url: `${process.env.FRONTEND_URL}?success=true`,
+      cancel_url: `${process.env.FRONTEND_URL}?canceled=true`,
+      metadata: {
+        supabase_user_id: user.id
+      }
+    });
+
+    res.json({ sessionId: session.id });
+
+  } catch (err) {
+    console.error("Checkout error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ---------- STRIPE WEBHOOK ---------- */
+app.post("/webhook", express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("Webhook signature verification failed:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Handle the event
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed':
+        const session = event.data.object;
+        const userId = session.metadata.supabase_user_id;
+
+        if (session.mode === 'payment') {
+          // One-time payment - add 1 scan credit
+          await supabase
+            .from("credits")
+            .insert({ user_id: userId, credits: 1 });
+        } else if (session.mode === 'subscription') {
+          // Subscription - update user's subscription status
+          await supabase
+            .from("subscriptions")
+            .upsert({
+              user_id: userId,
+              stripe_subscription_id: session.subscription,
+              status: 'active',
+              plan_type: session.metadata.plan_type || 'pro'
+            });
+        }
+        break;
+
+      case 'customer.subscription.updated':
+      case 'customer.subscription.deleted':
+        const subscription = event.data.object;
+        await supabase
+          .from("subscriptions")
+          .update({ status: subscription.status })
+          .eq("stripe_subscription_id", subscription.id);
+        break;
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    console.error("Webhook handler error:", err);
+    res.status(500).json({ error: "Webhook handler failed" });
+  }
 });
 
 /* ---------- SCAN ENDPOINT ---------- */
@@ -39,51 +164,29 @@ app.post("/scan", upload.single('file'), async (req, res) => {
     }
 
     const token = authHeader.replace("Bearer ", "");
-
-    // 1️⃣ Verify user
-    const { data: { user }, error: userError } =
-      await supabase.auth.getUser(token);
+    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
 
     if (userError || !user) {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    // 2️⃣ Check scan count
-    const { count, error: countError } = await supabase
-      .from("scans")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", user.id);
-
-    if (countError) {
-      throw countError;
-    }
-
-    if (count >= 1) {
-      return res.status(403).json({ error: "FREE_SCAN_USED" });
-    }
-
-    // 3️⃣ Check if file was uploaded
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // 4️⃣ Run AI detection
-    const aiScore = await detectAI(req.file);
-
-    // 5️⃣ Insert scan record with results
-    const isAI = aiScore > 0.5;
+    // Check if user has credits
+    const hasAccess = await checkUserAccess(user.id);
     
-    const { error: insertError } = await supabase
-      .from("scans")
-      .insert({ 
-        user_id: user.id,
-        score: aiScore,
-        is_ai: isAI
-      });
-
-    if (insertError) {
-      throw insertError;
+    if (!hasAccess) {
+      return res.status(403).json({ error: "FREE_SCAN_USED" });
     }
+
+    // Run AI detection
+    const aiScore = await detectAI(req.file);
+    const isAI = aiScore > 0.5;
+
+    // Record the scan
+    await recordScan(user.id, aiScore, isAI);
 
     res.json({ 
       allowed: true,
@@ -97,33 +200,87 @@ app.post("/scan", upload.single('file'), async (req, res) => {
   }
 });
 
-/* ---------- AI DETECTION FUNCTION ---------- */
+/* ---------- HELPER FUNCTIONS ---------- */
+
+async function checkUserAccess(userId) {
+  // Check if user has active subscription
+  const { data: subscription } = await supabase
+    .from("subscriptions")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .single();
+
+  if (subscription) {
+    return true; // Has active subscription
+  }
+
+  // Check if user has credits
+  const { data: credits } = await supabase
+    .from("credits")
+    .select("credits")
+    .eq("user_id", userId)
+    .single();
+
+  if (credits && credits.credits > 0) {
+    return true; // Has credits
+  }
+
+  // Check if user has used their free scan
+  const { count } = await supabase
+    .from("scans")
+    .select("*", { count: "exact", head: true })
+    .eq("user_id", userId);
+
+  return count === 0; // Allow if no scans yet
+}
+
+async function recordScan(userId, score, isAI) {
+  // Record the scan
+  await supabase
+    .from("scans")
+    .insert({ 
+      user_id: userId,
+      score: score,
+      is_ai: isAI
+    });
+
+  // Deduct credit if user has any
+  const { data: credits } = await supabase
+    .from("credits")
+    .select("*")
+    .eq("user_id", userId)
+    .single();
+
+  if (credits && credits.credits > 0) {
+    await supabase
+      .from("credits")
+      .update({ credits: credits.credits - 1 })
+      .eq("user_id", userId);
+  }
+}
+
 async function detectAI(file) {
-  // Simple placeholder - you'll need to implement actual AI detection
-  // Options:
-  // 1. Use Replicate API with an AI detection model
-  // 2. Use Hive AI API
-  // 3. Use OpenAI's moderation API
-  // 4. Build your own model
-  
-  // For now, return a random score for testing
+  // For now, return random score for testing
+  // TODO: Implement Replicate AI detection
   const mockScore = Math.random();
   console.log(`AI Detection Score: ${mockScore}`);
   
-  /* EXAMPLE: Using Replicate for AI detection
+  /* 
+  // Example Replicate implementation:
   try {
     const output = await replicate.run(
-      "ai-detection-model", // Replace with actual model
+      "andreasjansson/clip-features:75b33f253f7714a281ad3e9b28f63e3232d583716ef6718f2e46641077ea040a",
       {
         input: {
-          image: file.buffer.toString('base64')
+          inputs: file.buffer.toString('base64')
         }
       }
     );
-    return output.ai_probability;
+    return output.ai_probability || 0.5;
   } catch (err) {
     console.error("Replicate error:", err);
-    return 0.5; // Default fallback
+    return 0.5;
   }
   */
   
