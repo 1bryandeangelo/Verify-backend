@@ -92,7 +92,6 @@ app.listen(3000, () =>
   console.log("Verifly backend running")
 );
 
-import express from "express";
 import { createClient } from "@supabase/supabase-js";
 
 const app = express();
