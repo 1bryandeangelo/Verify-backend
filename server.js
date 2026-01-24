@@ -11,47 +11,40 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-/* HEALTH CHECK */
 app.get("/", (req, res) => {
   res.send("Verifly backend running");
 });
 
-/* SCAN GATE (NO AI YET) */
-import multer from "multer";
-const upload = multer({ storage: multer.memoryStorage() });
-
-app.post("/scan", upload.single("image"), async (req, res) => {
+app.post("/scan", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) {
-      return res.status(401).json({ error: "Missing auth" });
+      return res.status(401).json({ error: "Missing auth header" });
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error } = await supabase.auth.getUser(token);
 
+    const { data: { user }, error } = await supabase.auth.getUser(token);
     if (error || !user) {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    if (!req.file) {
-      return res.status(400).json({ error: "No image uploaded" });
-    }
-
-    const { count } = await supabase
+    const { count, error: countError } = await supabase
       .from("scans")
       .select("*", { count: "exact", head: true })
       .eq("user_id", user.id);
 
+    if (countError) {
+      return res.status(500).json({ error: "Scan lookup failed" });
+    }
+
     if (count >= 1) {
-      return res.status(403).json({ error: "Free scan used" });
+      return res.status(403).json({ error: "Free scan already used" });
     }
 
     await supabase.from("scans").insert({ user_id: user.id });
 
-    res.json({
-      message: "✅ Image received. AI scan coming next."
-    });
+    res.json({ allowed: true });
 
   } catch (err) {
     console.error(err);
@@ -59,8 +52,6 @@ app.post("/scan", upload.single("image"), async (req, res) => {
   }
 });
 
-/* START SERVER */
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Verifly backend running on port ${PORT}`);
+app.listen(3000, () => {
+  console.log("Verifly backend running on port 3000");
 });
