@@ -1,56 +1,74 @@
 import express from "express";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
-import Replicate from "replicate";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+/* =========================
+   SUPABASE (SERVICE ROLE)
+   ========================= */
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const replicate = new Replicate({
-  auth: process.env.REPLICATE_API_KEY
+/* =========================
+   HEALTH CHECK
+   ========================= */
+app.get("/", (req, res) => {
+  res.send("Verifly backend running");
 });
 
+/* =========================
+   SCAN GATE (NO AI YET)
+   ========================= */
 app.post("/scan", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "No auth" });
+
+    if (!authHeader) {
+      return res.status(401).json({ error: "Missing Authorization header" });
+    }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user } } = await supabase.auth.getUser(token);
-    if (!user) return res.status(401).json({ error: "Invalid token" });
 
-    const { imageUrl } = req.body;
-    if (!imageUrl) return res.status(400).json({ error: "Missing image" });
+    // 1️⃣ Verify user
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser(token);
 
-    const { count } = await supabase
+    if (userError || !user) {
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
+
+    // 2️⃣ Count scans
+    const { count, error: countError } = await supabase
       .from("scans")
       .select("*", { count: "exact", head: true })
       .eq("user_id", user.id);
 
-    if (count >= 1) {
-      return res.status(403).json({ error: "Free scan used" });
+    if (countError) {
+      return res.status(500).json({ error: "Scan lookup failed" });
     }
 
-    const output = await replicate.run(
-      "cjwbw/ai-image-detector",
-      { input: { image: imageUrl } }
-    );
+    if (count >= 1) {
+      return res.status(403).json({ error: "Free scan already used" });
+    }
 
-    const probability = output.probability || 0.5;
+    // 3️⃣ Insert scan record
+    const { error: insertError } = await supabase
+      .from("scans")
+      .insert({ user_id: user.id });
 
-    await supabase.from("scans").insert({
-      user_id: user.id,
-      image_url: imageUrl,
-      ai_probability: probability
-    });
+    if (insertError) {
+      return res.status(500).json({ error: "Failed to record scan" });
+    }
 
-    res.json({ ai_probability: probability });
+    // 4️⃣ Allow scan
+    res.json({ allowed: true });
 
   } catch (err) {
     console.error(err);
@@ -58,6 +76,10 @@ app.post("/scan", async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
-  console.log("Verifly backend running");
+/* =========================
+   START SERVER
+   ========================= */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Verifly backend running on port ${PORT}`);
 });
