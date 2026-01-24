@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
+import Replicate from "replicate";
 
 const app = express();
 app.use(cors());
@@ -11,40 +12,45 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-app.get("/", (req, res) => {
-  res.send("Verifly backend running");
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_KEY
 });
 
 app.post("/scan", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      return res.status(401).json({ error: "Missing auth header" });
-    }
+    if (!authHeader) return res.status(401).json({ error: "No auth" });
 
     const token = authHeader.replace("Bearer ", "");
+    const { data: { user } } = await supabase.auth.getUser(token);
+    if (!user) return res.status(401).json({ error: "Invalid token" });
 
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    if (error || !user) {
-      return res.status(401).json({ error: "Invalid token" });
-    }
+    const { imageUrl } = req.body;
+    if (!imageUrl) return res.status(400).json({ error: "Missing image" });
 
-    const { count, error: countError } = await supabase
+    const { count } = await supabase
       .from("scans")
       .select("*", { count: "exact", head: true })
       .eq("user_id", user.id);
 
-    if (countError) {
-      return res.status(500).json({ error: "Scan lookup failed" });
-    }
-
     if (count >= 1) {
-      return res.status(403).json({ error: "Free scan already used" });
+      return res.status(403).json({ error: "Free scan used" });
     }
 
-    await supabase.from("scans").insert({ user_id: user.id });
+    const output = await replicate.run(
+      "cjwbw/ai-image-detector",
+      { input: { image: imageUrl } }
+    );
 
-    res.json({ allowed: true });
+    const probability = output.probability || 0.5;
+
+    await supabase.from("scans").insert({
+      user_id: user.id,
+      image_url: imageUrl,
+      ai_probability: probability
+    });
+
+    res.json({ ai_probability: probability });
 
   } catch (err) {
     console.error(err);
@@ -53,5 +59,5 @@ app.post("/scan", async (req, res) => {
 });
 
 app.listen(3000, () => {
-  console.log("Verifly backend running on port 3000");
+  console.log("Verifly backend running");
 });
