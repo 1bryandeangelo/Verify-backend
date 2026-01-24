@@ -17,51 +17,41 @@ app.get("/", (req, res) => {
 });
 
 /* SCAN GATE (NO AI YET) */
-app.post("/scan", async (req, res) => {
+import multer from "multer";
+const upload = multer({ storage: multer.memoryStorage() });
+
+app.post("/scan", upload.single("image"), async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-
     if (!authHeader) {
-      return res.status(401).json({ error: "Missing Authorization header" });
+      return res.status(401).json({ error: "Missing auth" });
     }
 
     const token = authHeader.replace("Bearer ", "");
+    const { data: { user }, error } = await supabase.auth.getUser(token);
 
-    // 1️⃣ Verify user
-    const {
-      data: { user },
-      error: authError
-    } = await supabase.auth.getUser(token);
-
-    if (authError || !user) {
-      return res.status(401).json({ error: "Invalid or expired token" });
+    if (error || !user) {
+      return res.status(401).json({ error: "Invalid token" });
     }
 
-    // 2️⃣ Check scan count
-    const { count, error: countError } = await supabase
+    if (!req.file) {
+      return res.status(400).json({ error: "No image uploaded" });
+    }
+
+    const { count } = await supabase
       .from("scans")
       .select("*", { count: "exact", head: true })
       .eq("user_id", user.id);
 
-    if (countError) {
-      return res.status(500).json({ error: "Scan lookup failed" });
-    }
-
     if (count >= 1) {
-      return res.status(403).json({ error: "Free scan already used" });
+      return res.status(403).json({ error: "Free scan used" });
     }
 
-    // 3️⃣ Record scan
-    const { error: insertError } = await supabase
-      .from("scans")
-      .insert({ user_id: user.id });
+    await supabase.from("scans").insert({ user_id: user.id });
 
-    if (insertError) {
-      return res.status(500).json({ error: "Failed to record scan" });
-    }
-
-    // 4️⃣ Allow scan
-    res.json({ allowed: true });
+    res.json({
+      message: "✅ Image received. AI scan coming next."
+    });
 
   } catch (err) {
     console.error(err);
