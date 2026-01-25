@@ -5,6 +5,48 @@ import { createClient } from "@supabase/supabase-js";
 import Replicate from "replicate";
 import Stripe from "stripe";
 
+// Get client IP address
+function getClientIP(req) {
+  return req.headers['x-forwarded-for']?.split(',')[0] || 
+         req.headers['x-real-ip'] || 
+         req.connection.remoteAddress || 
+         req.socket.remoteAddress;
+}
+
+// Rate limiting function
+async function checkRateLimit(ip, endpoint, maxRequests, windowMinutes) {
+  const now = new Date();
+  const windowStart = new Date(now - windowMinutes * 60000);
+  
+  const { data: existing } = await supabase
+    .from('rate_limits')
+    .select('*')
+    .eq('ip_address', ip)
+    .eq('endpoint', endpoint)
+    .gte('window_start', windowStart.toISOString())
+    .single();
+  
+  if (existing) {
+    if (existing.request_count >= maxRequests) {
+      return false; // Rate limit exceeded
+    }
+    await supabase
+      .from('rate_limits')
+      .update({ request_count: existing.request_count + 1 })
+      .eq('id', existing.id);
+  } else {
+    await supabase
+      .from('rate_limits')
+      .insert({ 
+        ip_address: ip, 
+        endpoint: endpoint, 
+        request_count: 1,
+        window_start: now.toISOString()
+      });
+  }
+  return true;
+}
+
 const app = express();
 app.use(cors());
 
@@ -160,21 +202,39 @@ app.post("/scan", upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const hasAccess = await checkUserAccess(user.id);
+    // Get IP address
+    const ip = getClientIP(req);
     
-    if (!hasAccess) {
-      return res.status(403).json({ error: "FREE_SCAN_USED" });
+    // Rate limiting: 50 scans per hour
+    const canProceed = await checkRateLimit(ip, 'scan', 50, 60);
+    if (!canProceed) {
+      return res.status(429).json({ error: "Rate limit exceeded. Max 50 scans per hour." });
     }
 
+    // Check user's email verification
+    if (!user.email_confirmed_at) {
+      return res.status(403).json({ error: "Please verify your email before scanning" });
+    }
+
+    // Check if user has access and get their plan info
+    const accessInfo = await checkUserAccess(user.id);
+    
+    if (!accessInfo.hasAccess) {
+      return res.status(403).json({ error: "SCAN_LIMIT_REACHED" });
+    }
+
+    // Run AI detection
     const aiScore = await detectAI(req.file);
     const isAI = aiScore > 0.5;
 
-    await recordScan(user.id, aiScore, isAI);
+    // Record the scan with IP
+    await recordScan(user.id, aiScore, isAI, ip);
 
     res.json({ 
       allowed: true,
       aiScore: aiScore,
-      isAI: isAI
+      isAI: isAI,
+      scansRemaining: accessInfo.scansRemaining
     });
 
   } catch (err) {
@@ -183,53 +243,114 @@ app.post("/scan", upload.single('file'), async (req, res) => {
   }
 });
 
+
 /* ---------- HELPER FUNCTIONS ---------- */
 async function checkUserAccess(userId) {
-  const { data: subscription } = await supabase
-    .from("subscriptions")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("status", "active")
+  // Get user info
+  const { data: userInfo } = await supabase
+    .from("users")
+    .select("plan_type, monthly_scans_used, monthly_reset_date")
+    .eq("id", userId)
     .single();
 
-  if (subscription) return true;
+  // Reset monthly counter if it's a new month
+  if (userInfo?.monthly_reset_date) {
+    const resetDate = new Date(userInfo.monthly_reset_date);
+    const now = new Date();
+    if (now.getMonth() !== resetDate.getMonth() || now.getFullYear() !== resetDate.getFullYear()) {
+      await supabase
+        .from("users")
+        .update({ 
+          monthly_scans_used: 0,
+          monthly_reset_date: now.toISOString()
+        })
+        .eq("id", userId);
+      userInfo.monthly_scans_used = 0;
+    }
+  }
 
+  const planType = userInfo?.plan_type || 'free';
+  const scansUsed = userInfo?.monthly_scans_used || 0;
+
+  // Define plan limits
+  const planLimits = {
+    'free': 1,
+    'starter': 25,
+    'pro': 100,
+    'power': 500
+  };
+
+  const limit = planLimits[planType] || 1;
+
+  // Check if under limit
+  if (scansUsed < limit) {
+    return { 
+      hasAccess: true, 
+      scansRemaining: limit - scansUsed - 1,
+      planType: planType
+    };
+  }
+
+  // Check for one-time credits
   const { data: credits } = await supabase
     .from("credits")
     .select("credits")
     .eq("user_id", userId)
     .single();
 
-  if (credits && credits.credits > 0) return true;
+  if (credits && credits.credits > 0) {
+    return { 
+      hasAccess: true, 
+      scansRemaining: credits.credits - 1,
+      planType: 'credit'
+    };
+  }
 
-  const { count } = await supabase
-    .from("scans")
-    .select("*", { count: "exact", head: true })
-    .eq("user_id", userId);
-
-  return count === 0;
+  return { hasAccess: false, scansRemaining: 0, planType: planType };
 }
 
-async function recordScan(userId, score, isAI) {
+async function recordScan(userId, score, isAI, ip) {
+  // Record the scan
   await supabase
     .from("scans")
     .insert({ 
       user_id: userId,
       score: score,
-      is_ai: isAI
+      is_ai: isAI,
+      ip_address: ip
     });
 
-  const { data: credits } = await supabase
-    .from("credits")
-    .select("*")
-    .eq("user_id", userId)
+  // Get user plan
+  const { data: userInfo } = await supabase
+    .from("users")
+    .select("plan_type, monthly_scans_used")
+    .eq("id", userId)
     .single();
 
-  if (credits && credits.credits > 0) {
+  const planType = userInfo?.plan_type || 'free';
+
+  // If using subscription plan, increment monthly counter
+  if (['free', 'starter', 'pro', 'power'].includes(planType)) {
     await supabase
+      .from("users")
+      .update({ 
+        monthly_scans_used: (userInfo?.monthly_scans_used || 0) + 1
+      })
+      .eq("id", userId);
+  } else {
+    // If using one-time credits, deduct credit
+    const { data: credits } = await supabase
       .from("credits")
-      .update({ credits: credits.credits - 1 })
-      .eq("user_id", userId);
+      .select("*")
+      .eq("user_id", userId)
+      .single();
+
+    if (credits && credits.credits > 0) {
+      await supabase
+        .from("credits")
+        .update({ credits: credits.credits - 1 })
+        .eq("user_id", userId);
+    }
   }
 }
 
