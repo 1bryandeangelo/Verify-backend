@@ -8,60 +8,6 @@ import Stripe from "stripe";
 const app = express();
 app.use(cors());
 
-// Webhook MUST come before express.json()
-app.post("/webhook", express.raw({type: 'application/json'}), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-  } catch (err) {
-    console.error("Webhook error:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  try {
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-    
-    switch (event.type) {
-      case 'checkout.session.completed':
-        const session = event.data.object;
-        const userId = session.metadata.supabase_user_id;
-        console.log("Processing payment for user:", userId);
-
-        if (session.mode === 'payment') {
-          const { error } = await supabase
-            .from("credits")
-            .insert({ user_id: userId, credits: 1 });
-          
-          if (error) {
-            console.error("Credits insert error:", error);
-          } else {
-            console.log("✅ Credit added!");
-          }
-        }
-        break;
-    }
-    res.json({ received: true });
-  } catch (err) {
-    console.error("Webhook handler error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// NOW apply express.json() for other routes
-app.use(express.json());
-
-// Multer for file uploads
-const upload = multer({ 
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }
-});
-
 /* ---------- SUPABASE ---------- */
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -74,6 +20,60 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 /* ---------- REPLICATE ---------- */
 const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
+});
+
+/* ---------- WEBHOOK - BEFORE express.json() ---------- */
+app.post("/webhook", express.raw({type: 'application/json'}), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("❌ Webhook signature error:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  console.log("✅ Webhook received:", event.type);
+
+  try {
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const userId = session.metadata.supabase_user_id;
+      
+      console.log("💳 Payment completed for user:", userId);
+
+      if (session.mode === 'payment') {
+        const { error } = await supabase
+          .from("credits")
+          .insert({ user_id: userId, credits: 1 });
+        
+        if (error) {
+          console.error("❌ Credits insert error:", error);
+        } else {
+          console.log("✅ Credit added successfully!");
+        }
+      }
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    console.error("❌ Webhook handler error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ---------- NOW ADD express.json() ---------- */
+app.use(express.json());
+
+/* ---------- MULTER ---------- */
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }
 });
 
 /* ---------- HEALTH CHECK ---------- */
@@ -98,7 +98,6 @@ app.post("/create-checkout", async (req, res) => {
 
     const { priceId, mode } = req.body;
 
-    // Create or get Stripe customer
     let stripeCustomerId;
     const { data: existingCustomer } = await supabase
       .from("users")
@@ -115,16 +114,14 @@ app.post("/create-checkout", async (req, res) => {
       });
       stripeCustomerId = customer.id;
       
-      // Save customer ID
       await supabase
         .from("users")
         .upsert({ id: user.id, stripe_customer_id: stripeCustomerId });
     }
 
-    // Create checkout session
     const session = await stripe.checkout.sessions.create({
       customer: stripeCustomerId,
-      mode: mode, // 'payment' or 'subscription'
+      mode: mode,
       line_items: [{
         price: priceId,
         quantity: 1,
@@ -143,52 +140,6 @@ app.post("/create-checkout", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-/* ---------- STRIPE WEBHOOK ---------- */
-app.post("/webhook", express.raw({type: 'application/json'}), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-  } catch (err) {
-    console.error("Webhook error:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  try {
-    switch (event.type) {
-      case 'checkout.session.completed':
-        const session = event.data.object;
-        const userId = session.metadata.supabase_user_id;
-
-        console.log("Processing payment for user:", userId);
-
-        if (session.mode === 'payment') {
-          const { error } = await supabase
-            .from("credits")
-            .insert({ user_id: userId, credits: 1 });
-          
-          if (error) {
-            console.error("Credits insert error:", error);
-          } else {
-            console.log("✅ Credit added for user:", userId);
-          }
-        }
-        break;
-    }
-
-    res.json({ received: true });
-  } catch (err) {
-    console.error("Webhook handler error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 
 /* ---------- SCAN ENDPOINT ---------- */
 app.post("/scan", upload.single('file'), async (req, res) => {
@@ -209,18 +160,15 @@ app.post("/scan", upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // Check if user has credits
     const hasAccess = await checkUserAccess(user.id);
     
     if (!hasAccess) {
       return res.status(403).json({ error: "FREE_SCAN_USED" });
     }
 
-    // Run AI detection
     const aiScore = await detectAI(req.file);
     const isAI = aiScore > 0.5;
 
-    // Record the scan
     await recordScan(user.id, aiScore, isAI);
 
     res.json({ 
@@ -236,9 +184,7 @@ app.post("/scan", upload.single('file'), async (req, res) => {
 });
 
 /* ---------- HELPER FUNCTIONS ---------- */
-
 async function checkUserAccess(userId) {
-  // Check if user has active subscription
   const { data: subscription } = await supabase
     .from("subscriptions")
     .select("*")
@@ -246,32 +192,25 @@ async function checkUserAccess(userId) {
     .eq("status", "active")
     .single();
 
-  if (subscription) {
-    return true; // Has active subscription
-  }
+  if (subscription) return true;
 
-  // Check if user has credits
   const { data: credits } = await supabase
     .from("credits")
     .select("credits")
     .eq("user_id", userId)
     .single();
 
-  if (credits && credits.credits > 0) {
-    return true; // Has credits
-  }
+  if (credits && credits.credits > 0) return true;
 
-  // Check if user has used their free scan
   const { count } = await supabase
     .from("scans")
     .select("*", { count: "exact", head: true })
     .eq("user_id", userId);
 
-  return count === 0; // Allow if no scans yet
+  return count === 0;
 }
 
 async function recordScan(userId, score, isAI) {
-  // Record the scan
   await supabase
     .from("scans")
     .insert({ 
@@ -280,7 +219,6 @@ async function recordScan(userId, score, isAI) {
       is_ai: isAI
     });
 
-  // Deduct credit if user has any
   const { data: credits } = await supabase
     .from("credits")
     .select("*")
@@ -296,29 +234,8 @@ async function recordScan(userId, score, isAI) {
 }
 
 async function detectAI(file) {
-  // For now, return random score for testing
-  // TODO: Implement Replicate AI detection
   const mockScore = Math.random();
   console.log(`AI Detection Score: ${mockScore}`);
-  
-  /* 
-  // Example Replicate implementation:
-  try {
-    const output = await replicate.run(
-      "andreasjansson/clip-features:75b33f253f7714a281ad3e9b28f63e3232d583716ef6718f2e46641077ea040a",
-      {
-        input: {
-          inputs: file.buffer.toString('base64')
-        }
-      }
-    );
-    return output.ai_probability || 0.5;
-  } catch (err) {
-    console.error("Replicate error:", err);
-    return 0.5;
-  }
-  */
-  
   return mockScore;
 }
 
