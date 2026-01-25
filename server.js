@@ -7,7 +7,11 @@ import Stripe from "stripe";
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
 
 // Multer for file uploads
 const upload = multer({ 
