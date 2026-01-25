@@ -102,7 +102,7 @@ app.post("/create-checkout", async (req, res) => {
 });
 
 /* ---------- STRIPE WEBHOOK ---------- */
-app.post("/webhook", express.raw({ type: 'application/json' }), async (req, res) => {
+app.post("/webhook", express.raw({type: 'application/json'}), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
 
@@ -113,11 +113,10 @@ app.post("/webhook", express.raw({ type: 'application/json' }), async (req, res)
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.error("Webhook signature verification failed:", err.message);
+    console.error("Webhook error:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle the event
   try {
     switch (event.type) {
       case 'checkout.session.completed':
@@ -125,19 +124,17 @@ app.post("/webhook", express.raw({ type: 'application/json' }), async (req, res)
         const userId = session.metadata.supabase_user_id;
 
         if (session.mode === 'payment') {
-          // One-time payment - add 1 scan credit
           await supabase
             .from("credits")
             .insert({ user_id: userId, credits: 1 });
         } else if (session.mode === 'subscription') {
-          // Subscription - update user's subscription status
           await supabase
             .from("subscriptions")
             .upsert({
               user_id: userId,
               stripe_subscription_id: session.subscription,
               status: 'active',
-              plan_type: session.metadata.plan_type || 'pro'
+              plan_type: 'pro'
             });
         }
         break;
