@@ -7,23 +7,59 @@ import Stripe from "stripe";
 
 const app = express();
 app.use(cors());
-app.use((req, res, next) => {
-  if (req.originalUrl === '/webhook') {
-    next();
-  } else {
-    express.json()(req, res, next);
+
+// Webhook MUST come before express.json()
+app.post("/webhook", express.raw({type: 'application/json'}), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("Webhook error:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  try {
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+    
+    switch (event.type) {
+      case 'checkout.session.completed':
+        const session = event.data.object;
+        const userId = session.metadata.supabase_user_id;
+        console.log("Processing payment for user:", userId);
+
+        if (session.mode === 'payment') {
+          const { error } = await supabase
+            .from("credits")
+            .insert({ user_id: userId, credits: 1 });
+          
+          if (error) {
+            console.error("Credits insert error:", error);
+          } else {
+            console.log("✅ Credit added!");
+          }
+        }
+        break;
+    }
+    res.json({ received: true });
+  } catch (err) {
+    console.error("Webhook handler error:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-  verify: (req, res, buf) => {
-    req.rawBody = buf.toString();
-  }
-}));
+// NOW apply express.json() for other routes
+app.use(express.json());
 
 // Multer for file uploads
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
+  limits: { fileSize: 50 * 1024 * 1024 }
 });
 
 /* ---------- SUPABASE ---------- */
