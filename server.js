@@ -7,7 +7,14 @@ import Stripe from "stripe";
 
 const app = express();
 app.use(cors());
-app.use(express.json({
+app.use((req, res, next) => {
+  if (req.originalUrl === '/webhook') {
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
   verify: (req, res, buf) => {
     req.rawBody = buf.toString();
   }
@@ -123,38 +130,29 @@ app.post("/webhook", express.raw({type: 'application/json'}), async (req, res) =
         const session = event.data.object;
         const userId = session.metadata.supabase_user_id;
 
+        console.log("Processing payment for user:", userId);
+
         if (session.mode === 'payment') {
-          await supabase
+          const { error } = await supabase
             .from("credits")
             .insert({ user_id: userId, credits: 1 });
-        } else if (session.mode === 'subscription') {
-          await supabase
-            .from("subscriptions")
-            .upsert({
-              user_id: userId,
-              stripe_subscription_id: session.subscription,
-              status: 'active',
-              plan_type: 'pro'
-            });
+          
+          if (error) {
+            console.error("Credits insert error:", error);
+          } else {
+            console.log("✅ Credit added for user:", userId);
+          }
         }
-        break;
-
-      case 'customer.subscription.updated':
-      case 'customer.subscription.deleted':
-        const subscription = event.data.object;
-        await supabase
-          .from("subscriptions")
-          .update({ status: subscription.status })
-          .eq("stripe_subscription_id", subscription.id);
         break;
     }
 
     res.json({ received: true });
   } catch (err) {
     console.error("Webhook handler error:", err);
-    res.status(500).json({ error: "Webhook handler failed" });
+    res.status(500).json({ error: err.message });
   }
 });
+
 
 /* ---------- SCAN ENDPOINT ---------- */
 app.post("/scan", upload.single('file'), async (req, res) => {
