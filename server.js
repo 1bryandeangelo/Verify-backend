@@ -363,6 +363,7 @@ async function checkUserAccess(userId) {
     .eq("id", userId)
     .single();
 
+  // Reset monthly counter if new month
   if (userInfo?.monthly_reset_date) {
     const resetDate = new Date(userInfo.monthly_reset_date);
     const now = new Date();
@@ -416,6 +417,7 @@ async function checkUserAccess(userId) {
 }
 
 async function recordScan(userId, score, isAI, ip) {
+  // Save scan to history
   await supabase
     .from("scans")
     .insert({ 
@@ -424,6 +426,10 @@ async function recordScan(userId, score, isAI, ip) {
       is_ai: isAI,
       ip_address: ip
     });
+
+  // CRITICAL: Increment the scans used counter
+  await supabase.rpc('increment_scans_used', { user_id: userId });
+}
 
   const { data: userInfo } = await supabase
     .from("users")
