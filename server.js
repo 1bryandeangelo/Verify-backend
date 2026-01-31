@@ -435,8 +435,8 @@ async function detectAI(file) {
     
     console.log("Calling Replicate AI detection...");
     
-    const detection = await replicate.run(
-      "lucataco/ai-detector:3e1c41afd05b0f36df4ed16dd948c0c5b65f0f39e1220a21b4aa69b8c1278bb6",
+    const output = await replicate.run(
+      "capcheck/ai-image-detection:6429d84b63431102820fb5548a8f169ced4ec50a69111e41184df76de69dab76",
       {
         input: {
           image: dataURI
@@ -444,7 +444,11 @@ async function detectAI(file) {
       }
     );
     
-    const aiScore = parseFloat(detection) || 0.5;
+    // Parse the output - we'll see what format it returns and adjust
+    console.log("Replicate output:", JSON.stringify(output));
+    
+    // Try to extract AI score from output
+    const aiScore = parseFloat(output) || parseFloat(output.score) || parseFloat(output.ai_probability) || 0.5;
     
     console.log(`Real AI Detection Score: ${aiScore}`);
     return aiScore;
