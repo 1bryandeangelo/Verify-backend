@@ -343,12 +343,22 @@ app.post("/scan", upload.single('file'), async (req, res) => {
 
     await recordScan(user.id, aiScore, isAI, ip);
 
+    // FIXED: Calculate scans remaining AFTER the scan is recorded
+    const updatedScansRemaining = Math.max(0, accessInfo.scansRemaining - 1);
+
     res.json({ 
       allowed: true,
       aiScore: aiScore,
       isAI: isAI,
-      scansRemaining: accessInfo.scansRemaining
+      scansRemaining: updatedScansRemaining  // <-- NOW CORRECT!
     });
+
+  } catch (err) {
+    console.error("🔥 SCAN ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 
   } catch (err) {
     console.error("SCAN ERROR:", err);
