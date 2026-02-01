@@ -360,12 +360,6 @@ app.post("/scan", upload.single('file'), async (req, res) => {
 });
 
 
-  } catch (err) {
-    console.error("SCAN ERROR:", err);
-    res.status(500).json({ error: "SERVER_ERROR", details: err.message });
-  }
-});
-
 async function checkUserAccess(userId) {
   const { data: userInfo } = await supabase
     .from("users")
