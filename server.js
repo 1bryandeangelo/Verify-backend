@@ -416,43 +416,6 @@ async function checkUserAccess(userId) {
   };
 }
 
-  const planType = userInfo?.plan_type || 'free';
-  const scansUsed = userInfo?.monthly_scans_used || 0;
-
-  const planLimits = {
-    'free': 1,
-    'starter': 25,
-    'pro': 100,
-    'power': 500
-  };
-
-  const limit = planLimits[planType] || 1;
-
-  if (scansUsed < limit) {
-    return { 
-      hasAccess: true, 
-      scansRemaining: limit - scansUsed,
-      planType: planType
-    };
-  }
-
-  const { data: credits } = await supabase
-    .from("credits")
-    .select("credits")
-    .eq("user_id", userId)
-    .single();
-
-  if (credits && credits.credits > 0) {
-    return { 
-      hasAccess: true, 
-      scansRemaining: credits.credits,
-      planType: 'credit'
-    };
-  }
-
-  return { hasAccess: false, scansRemaining: 0, planType: planType };
-}
-
 async function recordScan(userId, score, isAI, ip) {
   await supabase
     .from("scans")
