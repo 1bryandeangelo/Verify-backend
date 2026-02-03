@@ -363,7 +363,7 @@ app.post("/scan", upload.single('file'), async (req, res) => {
 async function checkUserAccess(userId) {
   const { data: userInfo } = await supabase
     .from("users")
-    .select("plan_type, monthly_scans_used, monthly_reset_date")
+    .select("plan_type, monthly_scans_used, monthly_reset_date, has_used_free_scan")
     .eq("id", userId)
     .single();
 
@@ -375,12 +375,46 @@ async function checkUserAccess(userId) {
         .from("users")
         .update({ 
           monthly_scans_used: 0,
-          monthly_reset_date: now.toISOString()
+          monthly_reset_date: now.toISOString(),
+          has_used_free_scan: false  // Reset the free scan flag on monthly reset
         })
         .eq("id", userId);
-      if (userInfo) userInfo.monthly_scans_used = 0;
+      if (userInfo) {
+        userInfo.monthly_scans_used = 0;
+        userInfo.has_used_free_scan = false;
+      }
     }
   }
+
+  const planType = userInfo?.plan_type || 'free';
+  const scansUsed = userInfo?.monthly_scans_used || 0;
+  const hasUsedFreeScan = userInfo?.has_used_free_scan || false;
+
+  const planLimits = {
+    'free': 1,
+    'starter': 25,
+    'pro': 100,
+    'power': 500
+  };
+
+  const limit = planLimits[planType];
+  
+  // For free plan, check the has_used_free_scan flag
+  let hasAccess;
+  if (planType === 'free') {
+    hasAccess = !hasUsedFreeScan;  // Free users can only scan if they haven't used their free scan
+  } else {
+    hasAccess = scansUsed < limit;  // Paid users check monthly limit
+  }
+
+  const scansRemaining = hasAccess ? (planType === 'free' ? 1 : Math.max(0, limit - scansUsed)) : 0;
+
+  return {
+    hasAccess,
+    scansRemaining,
+    planType
+  };
+}
 
   const planType = userInfo?.plan_type || 'free';
   const scansUsed = userInfo?.monthly_scans_used || 0;
