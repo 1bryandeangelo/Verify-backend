@@ -419,6 +419,7 @@ async function checkUserAccess(userId) {
 async function recordScan(userId, score, isAI, ip) {
   console.log('📝 RECORDING SCAN - userId:', userId);
   
+  // Insert scan record
   await supabase
     .from("scans")
     .insert({ 
@@ -428,14 +429,21 @@ async function recordScan(userId, score, isAI, ip) {
       ip_address: ip
     });
 
-  console.log('📝 CALLING increment_scans_used');
+  console.log('📝 UPDATING user directly (bypassing RPC)');
   
-  const { data, error } = await supabase.rpc('increment_scans_used', { user_id: userId });
+  // Update user directly instead of using RPC
+  const { data, error } = await supabase
+    .from("users")
+    .update({ 
+      monthly_scans_used: supabase.raw('COALESCE(monthly_scans_used, 0) + 1'),
+      has_used_free_scan: true
+    })
+    .eq("id", userId);
   
-  console.log('📝 RPC RESULT:', { data, error });
+  console.log('📝 UPDATE RESULT:', { data, error });
   
   if (error) {
-    console.error('❌ RPC ERROR:', error);
+    console.error('❌ UPDATE ERROR:', error);
   }
 }
 
