@@ -417,6 +417,8 @@ async function checkUserAccess(userId) {
 }
 
 async function recordScan(userId, score, isAI, ip) {
+  console.log('📝 RECORDING SCAN - userId:', userId);
+  
   await supabase
     .from("scans")
     .insert({ 
@@ -426,8 +428,17 @@ async function recordScan(userId, score, isAI, ip) {
       ip_address: ip
     });
 
-  await supabase.rpc('increment_scans_used', { user_id: userId });
+  console.log('📝 CALLING increment_scans_used');
+  
+  const { data, error } = await supabase.rpc('increment_scans_used', { user_id: userId });
+  
+  console.log('📝 RPC RESULT:', { data, error });
+  
+  if (error) {
+    console.error('❌ RPC ERROR:', error);
+  }
 }
+
 
 async function detectAI(file) {
   try {
