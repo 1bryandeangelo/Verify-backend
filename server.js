@@ -363,10 +363,11 @@ app.post("/scan", upload.single('file'), async (req, res) => {
 async function checkUserAccess(userId) {
   const { data: userInfo } = await supabase
     .from("users")
-    .select("plan_type, monthly_scans_used, monthly_reset_date, has_used_free_scan")
+    .select("plan_type, monthly_scans_used, monthly_reset_date")
     .eq("id", userId)
     .single();
 
+  // Handle monthly reset
   if (userInfo?.monthly_reset_date) {
     const resetDate = new Date(userInfo.monthly_reset_date);
     const now = new Date();
@@ -375,20 +376,17 @@ async function checkUserAccess(userId) {
         .from("users")
         .update({ 
           monthly_scans_used: 0,
-          monthly_reset_date: now.toISOString(),
-          has_used_free_scan: false  // Reset the free scan flag on monthly reset
+          monthly_reset_date: now.toISOString()
         })
         .eq("id", userId);
       if (userInfo) {
         userInfo.monthly_scans_used = 0;
-        userInfo.has_used_free_scan = false;
       }
     }
   }
 
   const planType = userInfo?.plan_type || 'free';
   const scansUsed = userInfo?.monthly_scans_used || 0;
-  const hasUsedFreeScan = userInfo?.has_used_free_scan || false;
 
   const planLimits = {
     'free': 1,
@@ -399,15 +397,9 @@ async function checkUserAccess(userId) {
 
   const limit = planLimits[planType];
   
-  // For free plan, check the has_used_free_scan flag
-  let hasAccess;
-  if (planType === 'free') {
-    hasAccess = !hasUsedFreeScan;  // Free users can only scan if they haven't used their free scan
-  } else {
-    hasAccess = scansUsed < limit;  // Paid users check monthly limit
-  }
-
-  const scansRemaining = hasAccess ? (planType === 'free' ? 1 : Math.max(0, limit - scansUsed)) : 0;
+  // Simple logic: check if user has exceeded their limit
+  const hasAccess = scansUsed < limit;
+  const scansRemaining = Math.max(0, limit - scansUsed);
 
   return {
     hasAccess,
@@ -415,6 +407,7 @@ async function checkUserAccess(userId) {
     planType
   };
 }
+
 
 async function recordScan(userId, score, isAI, ip) {
   console.log('📝 RECORDING SCAN - userId:', userId);
