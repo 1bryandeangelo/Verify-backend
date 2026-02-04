@@ -429,13 +429,22 @@ async function recordScan(userId, score, isAI, ip) {
       ip_address: ip
     });
 
-  console.log('📝 UPDATING user directly (bypassing RPC)');
+  console.log('📝 UPDATING user directly');
   
-  // Update user directly instead of using RPC
+  // First get current value
+  const { data: currentUser } = await supabase
+    .from("users")
+    .select("monthly_scans_used")
+    .eq("id", userId)
+    .single();
+  
+  const currentScans = currentUser?.monthly_scans_used || 0;
+  
+  // Then update with incremented value
   const { data, error } = await supabase
     .from("users")
     .update({ 
-      monthly_scans_used: supabase.raw('COALESCE(monthly_scans_used, 0) + 1'),
+      monthly_scans_used: currentScans + 1,
       has_used_free_scan: true
     })
     .eq("id", userId);
