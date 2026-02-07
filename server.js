@@ -492,13 +492,27 @@ async function detectAI(file) {
       }
     );
     
-    // Parse the output - we'll see what format it returns and adjust
     console.log("Replicate output:", JSON.stringify(output));
     
-    // Try to extract AI score from output
-    const aiScore = parseFloat(output) || parseFloat(output.score) || parseFloat(output.ai_probability) || 0.5;
+    // Use ai_probability if it exists, otherwise try to parse from raw_results
+    let aiScore;
     
-    console.log(`Real AI Detection Score: ${aiScore}`);
+    if (output.ai_probability !== undefined) {
+      aiScore = output.ai_probability;
+      console.log(`Using ai_probability: ${aiScore}`);
+    } else if (output.raw_results) {
+      // Find the FAKE score (AI-generated)
+      const fakeResult = output.raw_results.find(r => r.label === "FAKE");
+      aiScore = fakeResult ? fakeResult.score : 0.5;
+      console.log(`Using FAKE score from raw_results: ${aiScore}`);
+    } else {
+      aiScore = parseFloat(output) || 0.5;
+      console.log(`Fallback parsing: ${aiScore}`);
+    }
+    
+    console.log(`Final AI Detection Score: ${aiScore}`);
+    console.log(`Interpretation: ${aiScore > 0.5 ? 'AI-generated' : 'Human-made'}`);
+    
     return aiScore;
     
   } catch (err) {
@@ -507,7 +521,3 @@ async function detectAI(file) {
   }
 }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Backend listening on", PORT);
-});
