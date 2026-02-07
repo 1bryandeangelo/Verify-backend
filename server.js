@@ -363,12 +363,12 @@ app.post("/scan", upload.single('file'), async (req, res) => {
 async function checkUserAccess(userId) {
   const { data: userInfo } = await supabase
     .from("users")
-    .select("plan_type, monthly_scans_used, monthly_reset_date")
+    .select("plan_type, has_used_free_scan, monthly_scans_used, monthly_reset_date")
     .eq("id", userId)
     .single();
 
-  // Handle monthly reset
-  if (userInfo?.monthly_reset_date) {
+  // Handle monthly reset for paid plans
+  if (userInfo?.monthly_reset_date && userInfo.plan_type !== 'free') {
     const resetDate = new Date(userInfo.monthly_reset_date);
     const now = new Date();
     if (now.getMonth() !== resetDate.getMonth() || now.getFullYear() !== resetDate.getFullYear()) {
@@ -386,8 +386,7 @@ async function checkUserAccess(userId) {
   }
 
   const planType = userInfo?.plan_type || 'free';
-  const scansUsed = userInfo?.monthly_scans_used || 0;
-
+  
   const planLimits = {
     'free': 1,
     'starter': 25,
@@ -395,11 +394,20 @@ async function checkUserAccess(userId) {
     'power': 500
   };
 
-  const limit = planLimits[planType];
-  
-  // Simple logic: check if user has exceeded their limit
-  const hasAccess = scansUsed < limit;
-  const scansRemaining = Math.max(0, limit - scansUsed);
+  let hasAccess;
+  let scansRemaining;
+
+  if (planType === 'free') {
+    // Free users: check the boolean flag
+    hasAccess = !userInfo?.has_used_free_scan;
+    scansRemaining = hasAccess ? 1 : 0;
+  } else {
+    // Paid users: check monthly counter
+    const scansUsed = userInfo?.monthly_scans_used || 0;
+    const limit = planLimits[planType];
+    hasAccess = scansUsed < limit;
+    scansRemaining = Math.max(0, limit - scansUsed);
+  }
 
   return {
     hasAccess,
@@ -407,7 +415,6 @@ async function checkUserAccess(userId) {
     planType
   };
 }
-
 
 async function recordScan(userId, score, isAI, ip) {
   console.log('📝 RECORDING SCAN - userId:', userId);
@@ -422,27 +429,31 @@ async function recordScan(userId, score, isAI, ip) {
       ip_address: ip
     });
 
-  console.log('📝 UPDATING user directly');
-  
-  // First get current value
-  const { data: currentUser } = await supabase
+  // Get user's plan type and current counts
+  const { data: userInfo } = await supabase
     .from("users")
-    .select("monthly_scans_used")
+    .select("plan_type, scans_used, monthly_scans_used")
     .eq("id", userId)
     .single();
-  
-  const currentScans = currentUser?.monthly_scans_used || 0;
-  
-  // Then update with incremented value
+
+  const planType = userInfo?.plan_type || 'free';
+  const updates = {
+    scans_used: (userInfo?.scans_used || 0) + 1  // Always increment total
+  };
+
+  // Update the appropriate counter based on plan
+  if (planType === 'free') {
+    updates.has_used_free_scan = true;
+  } else if (['starter', 'pro', 'power'].includes(planType)) {
+    updates.monthly_scans_used = (userInfo?.monthly_scans_used || 0) + 1;
+  }
+
   const { data, error } = await supabase
     .from("users")
-    .update({ 
-      monthly_scans_used: currentScans + 1,
-      has_used_free_scan: true
-    })
+    .update(updates)
     .eq("id", userId);
   
-  console.log('📝 UPDATE RESULT:', { data, error });
+  console.log('📝 UPDATE RESULT:', { data, error, updates });
   
   if (error) {
     console.error('❌ UPDATE ERROR:', error);
