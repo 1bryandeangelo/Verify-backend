@@ -367,6 +367,8 @@ async function checkUserAccess(userId) {
     .eq("id", userId)
     .single();
 
+  console.log('🔍 USER INFO:', userInfo);
+
   // Handle monthly reset for paid plans
   if (userInfo?.monthly_reset_date && userInfo.plan_type !== 'free') {
     const resetDate = new Date(userInfo.monthly_reset_date);
@@ -398,16 +400,27 @@ async function checkUserAccess(userId) {
   let scansRemaining;
 
   if (planType === 'free') {
-    // Free users: check the boolean flag
     hasAccess = !userInfo?.has_used_free_scan;
     scansRemaining = hasAccess ? 1 : 0;
+    console.log('🔍 FREE USER CHECK:', {
+      has_used_free_scan: userInfo?.has_used_free_scan,
+      hasAccess,
+      scansRemaining
+    });
   } else {
-    // Paid users: check monthly counter
     const scansUsed = userInfo?.monthly_scans_used || 0;
     const limit = planLimits[planType];
     hasAccess = scansUsed < limit;
     scansRemaining = Math.max(0, limit - scansUsed);
+    console.log('🔍 PAID USER CHECK:', {
+      scansUsed,
+      limit,
+      hasAccess,
+      scansRemaining
+    });
   }
+
+  console.log('🔍 FINAL ACCESS DECISION:', { hasAccess, scansRemaining, planType });
 
   return {
     hasAccess,
@@ -415,6 +428,7 @@ async function checkUserAccess(userId) {
     planType
   };
 }
+
 
 async function recordScan(userId, score, isAI, ip) {
   console.log('📝 RECORDING SCAN - userId:', userId);
