@@ -361,6 +361,7 @@ app.post("/scan", upload.single('file'), async (req, res) => {
 
 
 async function checkUserAccess(userId) {
+  console.log('🔍 CHECKING ACCESS FOR userId:', userId);
   const { data: userInfo } = await supabase
     .from("users")
     .select("plan_type, has_used_free_scan, monthly_scans_used, monthly_reset_date")
