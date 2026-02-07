@@ -475,3 +475,34 @@ async function recordScan(userId, score, isAI, ip) {
   }
 }
 
+async function detectAI(file) {
+  try {
+    const base64Image = file.buffer.toString('base64');
+    const dataURI = `data:${file.mimetype};base64,${base64Image}`;
+    
+    console.log("Calling Replicate AI detection...");
+    
+    const output = await replicate.run(
+      "capcheck/ai-image-detection:6429d84b63431102820fb5548a8f169ced4ec50a69111e41184df76de69dab76",
+      {
+        input: { image: dataURI }
+      }
+    );
+    
+    console.log("Replicate output:", JSON.stringify(output));
+    
+    const aiScore = output.ai_probability || 0.5;
+    console.log(`Real AI Detection Score: ${aiScore}`);
+    return aiScore;
+    
+  } catch (err) {
+    console.error("Replicate error:", err);
+    return 0.5;
+  }
+}
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Backend listening on", PORT);
+});
+
